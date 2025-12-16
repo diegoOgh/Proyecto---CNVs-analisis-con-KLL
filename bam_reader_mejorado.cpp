@@ -3,6 +3,7 @@
 #include <unordered_map>
 #include <string>
 #include <chrono>
+#include <fstream>
 
 #include <htslib/sam.h>
 #include "datasketches-cpp/kll/include/kll_sketch.hpp"
@@ -11,16 +12,15 @@ using namespace datasketches;
 
 int main(int argc, char* argv[]) {
 
-    if (argc != 3) {
-        std::cerr << "Uso: " << argv[0] << " <archivo.bam> <bin_size>\n";
+    if (argc != 4) {
+        std::cerr << "Uso: " << argv[0]
+                  << " <archivo.bam> <bin_size> <output.csv>\n";
         return 1;
     }
 
     const char* bam_file = argv[1];
     int bin_size = std::atoi(argv[2]);
-
-    std::cout << "Analizando cobertura en bins de "
-              << bin_size << " bp\n";
+    const char* csv_file = argv[3];
 
     // --- Abrir BAM ---
     samFile* bam_fp = sam_open(bam_file, "r");
@@ -36,60 +36,51 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    // --- Alineamientos ---
     bam1_t* aln = bam_init1();
 
-    // --- KLL Sketch ---
-    kll_sketch<float> coverage_sketch(200);
+    // --- KLL ---
+    constexpr int K = 200;
+    kll_sketch<float> coverage_sketch(K);
+
     using clock = std::chrono::steady_clock;
     std::chrono::duration<double> kll_time{0};
 
-    // --- Estado por cromosoma ---
-    std::string current_chr = "";
+    std::string current_chr;
     std::unordered_map<uint32_t, uint32_t> bins;
-    bins.reserve(100000); // evita rehash
+    bins.reserve(100000);
 
     uint64_t total_reads = 0;
+    uint64_t total_bins = 0;
 
-    std::cout << "Procesando reads...\n";
+    for (int i = 0; i < header->n_targets; ++i) {
+    uint64_t chr_len = header->target_len[i];
+    total_bins += (chr_len + bin_size - 1) / bin_size;
+}
 
-    // Leer BAM y contar cobertura por bin
+
+
+    // --- Lectura BAM ---
     while (sam_read1(bam_fp, header, aln) >= 0) {
 
         total_reads++;
 
-        //cada 5 millones de reads procesados, imprimir progreso
-        if (total_reads % 100'000'000 == 0)
-            std::cout << "Procesados: " << total_reads << "\n";
-
-        // Filtros que saltan reads que no deben contar para cobertura
-        // Donde BAM_FUNMAP = read no mapeado
-        //       BAM_FSECONDARY = read secundario
-        //       BAM_FSUPPLEMENTARY = read suplementario
-        //       BAM_FDUP = read duplicado
         if (aln->core.flag & (BAM_FUNMAP |
                               BAM_FSECONDARY |
                               BAM_FSUPPLEMENTARY |
                               BAM_FDUP))
             continue;
 
-        // Obtener cromosoma actual
         std::string chr = header->target_name[aln->core.tid];
 
-        // Inicialización
         if (current_chr.empty())
             current_chr = chr;
 
-        // Cambio de cromosoma → flush
         if (chr != current_chr) {
-
             auto t1 = clock::now();
             for (const auto& e : bins)
                 coverage_sketch.update(static_cast<float>(e.second));
             auto t2 = clock::now();
-
             kll_time += (t2 - t1);
-
 
             bins.clear();
             current_chr = chr;
@@ -98,7 +89,6 @@ int main(int argc, char* argv[]) {
         int start = aln->core.pos;
         int end   = bam_endpos(aln);
 
-        //Recorrer posiciones del read y actualizar bins
         for (int p = start; p < end; p += bin_size) {
             uint32_t bin = p / bin_size;
             bins[bin]++;
@@ -110,69 +100,62 @@ int main(int argc, char* argv[]) {
     for (const auto& e : bins)
         coverage_sketch.update(static_cast<float>(e.second));
     auto t2 = clock::now();
-
     kll_time += (t2 - t1);
 
-
-    // Limpieza
     bam_destroy1(aln);
     sam_hdr_destroy(header);
     sam_close(bam_fp);
 
-    std::cout << "Total reads procesados: "
-              << total_reads << "\n";
+    // --- Percentiles EXACTOS ---
+    float p1  = coverage_sketch.get_quantile(0.01);
+    float p5  = coverage_sketch.get_quantile(0.05);
+    float p25 = coverage_sketch.get_quantile(0.25);
+    float p50 = coverage_sketch.get_quantile(0.50);
+    float p75 = coverage_sketch.get_quantile(0.75);
+    float p95 = coverage_sketch.get_quantile(0.95);
+    float p99 = coverage_sketch.get_quantile(0.99);
 
-    // --- Análisis de distribución de cobertura ---
-std::cout << std::fixed << std::setprecision(2);
-std::cout << "\n=== DISTRIBUCIÓN DE COBERTURA (por bin de "
-          << bin_size << " bp) ===\n";
+    float minv = coverage_sketch.get_min_item();
+    float maxv = coverage_sketch.get_max_item();
 
-float p1  = coverage_sketch.get_quantile(0.01);
-float p5  = coverage_sketch.get_quantile(0.05);
-float p25 = coverage_sketch.get_quantile(0.25);
-float p50 = coverage_sketch.get_quantile(0.50);
-float p75 = coverage_sketch.get_quantile(0.75);
-float p95 = coverage_sketch.get_quantile(0.95);
-float p99 = coverage_sketch.get_quantile(0.99);
+    float iqr = p75 - p25;
+    float deletion_threshold    = p50 * 0.5f;
+    float duplication_threshold = p50 * 1.5f;
 
-std::cout << "P1  (percentil 1):  " << p1  << "×\n";
-std::cout << "P5  (percentil 5):  " << p5  << "×\n";
-std::cout << "P25 (Q1):           " << p25 << "×\n";
-std::cout << "P50 (Mediana):      " << p50 << "× ← Cobertura típica\n";
-std::cout << "P75 (Q3):           " << p75 << "×\n";
-std::cout << "P95:                " << p95 << "×\n";
-std::cout << "P99:                " << p99 << "×\n";
-std::cout << "Mínimo:             " << coverage_sketch.get_min_item() << "×\n";
-std::cout << "Máximo:             " << coverage_sketch.get_max_item() << "×\n";
+    size_t kll_items = coverage_sketch.get_num_retained();
 
-// --- Detección de anomalías (heurística simple) ---
-std::cout << "\n=== DETECCIÓN DE POSIBLES CNVs (heurística) ===\n";
+    // --- CSV ---
+    bool write_header = false;
+    std::ifstream check(csv_file);
+    if (!check.good())
+        write_header = true;
+    check.close();
 
-float iqr = p75 - p25;
-float low_threshold_iqr  = p25 - 1.5f * iqr;
-float high_threshold_iqr = p75 + 1.5f * iqr;
+    std::ofstream out(csv_file, std::ios::app);
+    out << std::fixed << std::setprecision(6);
 
-// Umbrales basados en la mediana
-float deletion_threshold    = p50 * 0.5f;
-float duplication_threshold = p50 * 1.5f;
+    if (write_header) {
+        out << "bin_size,"
+            << "total_bins," 
+            << "p1,p5,p25,p50,p75,p95,p99,"
+            << "min,max,iqr,"
+            << "deletion_threshold,duplication_threshold,"
+            << "kll_items,kll_k,kll_time_sec\n";
+    }
 
-std::cout << "Cobertura normal (IQR): "
-          << p25 << "× - " << p75 << "×\n";
-std::cout << "Umbral deleción (< 0.5× mediana): "
-          << deletion_threshold << "×\n";
-std::cout << "Umbral duplicación (> 1.5× mediana): "
-          << duplication_threshold << "×\n";
+    out << bin_size << ","
+        << total_bins << ","
+        << p1 << "," << p5 << "," << p25 << "," << p50 << ","
+        << p75 << "," << p95 << "," << p99 << ","
+        << minv << "," << maxv << ","
+        << iqr << ","
+        << deletion_threshold << ","
+        << duplication_threshold << ","
+        << kll_items << ","
+        << K << ","
+        << kll_time.count() << "\n";
 
-// --- Métricas de compresión ---
-std::cout << "\n=== MÉTRICAS DE COMPRESIÓN ===\n";
-std::cout << "Items retenidos en KLL: "
-          << coverage_sketch.get_num_retained() << "\n";
-std::cout << "Parámetro k: 200\n";
-
-// --- Tiempo KLL ---
-std::cout << "\n=== RENDIMIENTO KLL ===\n";
-std::cout << "Tiempo total KLL (resumen de cobertura): "
-          << kll_time.count() << " segundos\n";
+    out.close();
 
     return 0;
 }
