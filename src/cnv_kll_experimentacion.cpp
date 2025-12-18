@@ -7,7 +7,7 @@
 #include <chrono>
 
 #include <htslib/sam.h>
-#include "datasketches-cpp/kll/include/kll_sketch.hpp"
+#include "kll_sketch.hpp"
 
 using namespace datasketches;
 using hr_clock = std::chrono::high_resolution_clock;
@@ -21,7 +21,7 @@ int main(int argc, char* argv[]) {
 
     const char* bam_file = argv[1];
 
-    std::vector<int> bin_sizes = {100 ,200, 500, 1000, 2000, 5000, 10000};
+    std::vector<int> bin_sizes = {100 , 200, 500, 1000, 2000, 5000, 10000};
     const int K = 200;
 
     std::ofstream csv("bin_experiment.csv");
@@ -47,6 +47,12 @@ int main(int argc, char* argv[]) {
         bins.reserve(200000);
 
         std::string current_chr;
+        uint64_t total_bins = 0;
+
+        for (int i = 0; i < header->n_targets; ++i) {
+        uint64_t chr_len = header->target_len[i];
+        total_bins += (chr_len + bin_size - 1) / bin_size;
+    }
 
         while (sam_read1(bam_fp, header, aln) >= 0) {
 
@@ -93,7 +99,7 @@ int main(int argc, char* argv[]) {
         size_t kll_mem   = coverage_sketch.get_serialized_size_bytes();
 
         csv << bin_size << ","
-            << bins.size() << ","
+            << total_bins << ","
             << p25 << ","
             << p50 << ","
             << p75 << ","

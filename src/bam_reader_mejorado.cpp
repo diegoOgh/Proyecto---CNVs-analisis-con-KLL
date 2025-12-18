@@ -6,7 +6,7 @@
 #include <fstream>
 
 #include <htslib/sam.h>
-#include "datasketches-cpp/kll/include/kll_sketch.hpp"
+#include "kll_sketch.hpp"
 
 using namespace datasketches;
 
@@ -106,7 +106,7 @@ int main(int argc, char* argv[]) {
     sam_hdr_destroy(header);
     sam_close(bam_fp);
 
-    // --- Percentiles EXACTOS ---
+    // --- Percentiles aproximados ---
     float p1  = coverage_sketch.get_quantile(0.01);
     float p5  = coverage_sketch.get_quantile(0.05);
     float p25 = coverage_sketch.get_quantile(0.25);
