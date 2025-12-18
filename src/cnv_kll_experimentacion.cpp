@@ -22,7 +22,7 @@ int main(int argc, char* argv[]) {
     const char* bam_file = argv[1];
 
     std::vector<int> bin_sizes = {100 , 200, 500, 1000, 2000, 5000, 10000};
-    const int K = 200;
+    const int K = 400;
 
     std::ofstream csv("bin_experiment.csv");
     csv << "bin_size,num_bins,p25,p50,p75,p95,"

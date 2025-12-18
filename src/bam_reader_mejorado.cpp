@@ -39,7 +39,7 @@ int main(int argc, char* argv[]) {
     bam1_t* aln = bam_init1();
 
     // --- KLL ---
-    constexpr int K = 200;
+    constexpr int K = 400;
     kll_sketch<float> coverage_sketch(K);
 
     using clock = std::chrono::steady_clock;
