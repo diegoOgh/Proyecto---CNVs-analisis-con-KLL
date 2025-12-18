@@ -106,6 +106,7 @@ int main(int argc, char* argv[]) {
     std::ofstream out(csv_file);
     out << std::fixed << std::setprecision(6);
     out << "bin_size,K,"
+        << "p5_kll,p5_exact,p5_rank_error,"
         << "p50_kll,p50_exact,p50_rank_error,"
         << "p95_kll,p95_exact,p95_rank_error,"
         << "kll_time_sec,kll_bytes\n";
